@@ -1,0 +1,114 @@
+import numpy as np
+from tensorflow.keras.models import load_model
+import os
+import wave
+import librosa
+import matplotlib.pyplot as plt
+from pathlib import Path
+from tensorflow.keras.preprocessing.image import img_to_array, load_img
+from skimage.transform import resize
+
+# Load the trained model
+model = load_model(r"D:\prediction\saved_models_tf\model_asc.hdf5")  # Provide the correct path to your model file
+
+# Load the label encoder classes
+label_encoder_classes = np.load(r"D:\prediction\saved_models_tf\label_encoder_classes_asc.npy")
+
+# Directory containing audio files for prediction
+# prediction_directory = r"D:\audio classification\UrbanSound8K\predict_asc"
+prediction_directory = r"D:\flutter_projects\audio_capture_saving_to_server\server\uploaded_audio"
+# Function to calculate ZCR
+def calculate_zcr(audio_file):
+    try:
+        # Read the WAV file
+        wav = wave.open(audio_file, 'r')
+        frames = wav.readframes(-1)
+        sound_info = np.frombuffer(frames, dtype=np.int16)
+        wav.close()
+
+        # Calculate ZCR
+        zcr = np.mean(np.abs(np.diff(np.sign(sound_info))) / 2.0)
+
+        return zcr
+    except Exception as e:
+        print(f"An error occurred for {audio_file}: {e}")
+        return None
+
+# Function to calculate MFCCs and normalize
+def calculate_mfcc_and_normalize(audio_file, desired_shape):
+    try:
+        # Calculate MFCCs
+        audio, sample_rate = librosa.load(audio_file, sr=None)  # Load the audio file
+        mfccs = librosa.feature.mfcc(y=audio, sr=sample_rate, n_mfcc=desired_shape[1])  # Adjust the number of MFCC coefficients
+        
+        # Resize MFCCs
+        mfccs_resized = resize(mfccs, desired_shape, mode='reflect', anti_aliasing=True)
+        
+        # Normalize MFCCs
+        mfccs_resized = (mfccs_resized - np.mean(mfccs_resized)) / np.std(mfccs_resized)
+        
+        return mfccs_resized
+    except Exception as e:
+        print(f"An error occurred for {audio_file}: {e}")
+        return None
+
+# Function to generate mel spectrogram
+def generate_mel_spectrogram_and_resize(file_path, desired_shape):
+    try:
+        # Load the audio file
+        y, sr = librosa.load(file_path, sr=None)
+
+        # Calculate the mel spectrogram
+        mel_spectrogram = librosa.feature.melspectrogram(y=y, sr=sr)
+        
+        # Resize mel spectrogram
+        mel_spectrogram_resized = resize(mel_spectrogram, desired_shape[1:], mode='reflect', anti_aliasing=True)
+        
+        # Convert to decibels
+        log_mel_spec = librosa.power_to_db(mel_spectrogram_resized, ref=np.max)
+        
+        return log_mel_spec
+    except Exception as e:
+        print(f"An error occurred for {file_path}: {e}")
+        return None
+
+# Desired shapes for input data
+desired_mfcc_shape = (1, 13, 13)
+desired_log_mel_shape = (1, 128, 862)
+
+# Iterate through all files in the directory
+for filename in os.listdir(prediction_directory):
+    if filename.endswith(".wav"):
+        file_path = os.path.join(prediction_directory, filename)
+
+        # Calculate ZCR
+        zcr = calculate_zcr(file_path)
+
+        # Calculate MFCCs and normalize
+        mfccs = calculate_mfcc_and_normalize(file_path, desired_mfcc_shape)
+
+        # Generate mel spectrogram and resize
+        mel_spectrogram = generate_mel_spectrogram_and_resize(file_path, desired_log_mel_shape)
+
+        if zcr is not None and mfccs is not None and mel_spectrogram is not None:
+            # Prepare data for prediction
+            mfccs = np.expand_dims(mfccs, axis=0)  # Add batch dimension
+            mel_spectrogram = np.expand_dims(mel_spectrogram, axis=0)  # Add batch dimension
+            zcr = np.array([[zcr]])  # Reshape ZCR
+
+            # Predict the class using the loaded model
+            predictions = model.predict([mel_spectrogram, mfccs, zcr])
+            predicted_label = np.argmax(predictions, axis=1)
+
+            # Assuming label_encoder_classes is a dictionary mapping class indices to class labels
+            predicted_class_label = label_encoder_classes[predicted_label[0]]
+
+            class_names = [
+                'class_airport', 'class_bus', 'class_metro', 'class_metro_station', 'class_park',
+                'class_public_square', 'class_shopping_mall', 'class_street_pedestrian', 
+                'class_street_traffic', 'class_tram'
+            ]
+
+            # Print the file name and predicted class label
+            print(f"File: {filename}, Predicted Class Label: {class_names[predicted_class_label]}")
+            print("-----------------------------")
